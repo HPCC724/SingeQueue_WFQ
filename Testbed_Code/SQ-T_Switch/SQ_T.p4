@@ -18,7 +18,8 @@ const PortId_t OutputPort = 132;
 struct metadata_t{
     bit<32> flow_index;          
     bit<32> weight;               
-    bit<32> limit_normalized;      
+    bit<32> limit_normalized;   
+    bit<32> flow_round_index;    
     bit<32> round;                  
     bit<32> round_mult_wf;                 
     bit<32> compare_unit_temp;      
@@ -143,14 +144,28 @@ control SwitchIngress(
         size = 512;
     }
 
-    //table for round index:
-    action get_round_index_action(bit<32> round_index){
+      //table for round index:
+    action get_workerround_index_action(bit<32> round_index){
         hdr.worker_t.round_index = round_index;
     }
-    table get_round_index_table{
+    table get_workerround_index_table{
         key = {
             hdr.worker_t.egress_port: exact;
             hdr.worker_t.qid: exact;
+        }
+        actions = {
+            get_workerround_index_action;
+        }
+        size = 128;
+    }
+    //table for get round index (not worker):
+    action get_round_index_action(bit<32> flow_round_index){
+        meta.flow_round_index = flow_round_index; 
+    }
+    table get_flow_round_index_table{
+        key = {
+            ig_tm_md.ucast_egress_port:exact;
+            ig_tm_md.qid:exact;
         }
         actions = {
             get_round_index_action;
@@ -341,7 +356,7 @@ control SwitchIngress(
 
         if(hdr.worker_t.isValid()){
             //set r
-            get_round_index_table.apply();
+            get_workerround_index_table.apply();
             Set_Ingress_Round_REG_Action.execute(hdr.worker_t.round_index);
             ig_tm_md.ucast_egress_port = LoopBackPort;
             ig_dprsr_md.drop_ctl = 0;
@@ -371,8 +386,10 @@ control SwitchIngress(
                     meta.timediff_low = meta.timestamp_diff[15:0];
                     tbl_get_new_wf.apply();
 
+                //get round index
+                get_flow_round_index_table.apply();
                 //get round
-                meta.round = Get_Ingress_Round_REG_Action.execute(0);
+                meta.round = Get_Ingress_Round_REG_Action.execute(meta.flow_round_index);
                 
                 //get r*wf
                 tbl_get_rwf.apply();

@@ -6,19 +6,8 @@
 
 // const bit<9> LoopBackPort = 0x0;
 const PortId_t LoopBackPort = 164;
-const PortId_t OutputPort = 140;
+const PortId_t OutputPort = 132;
 
-
-//为了不溢出做出的改进：Bf寄存器存储的是Bf/(R*wf)，round寄存器还是存r
-//比较的时候，直接用Bf寄存器的值加增加单元(1500/(R*wf))-r与Q/R比较即可
-
-//订正：Bf寄存器存储的是Bf/R,因为用Bf/(R*wf)的话会在Bf的寄存器阶段引入太多变量，无法通过编译
-//问题是：r是寄存器里面的数值，且不可能对每个r的值都做匹配，只能对r做运算，所以wf的取值是非常有限的
-
-
-//R取一个较大的值，比如500，1500之类的
-
-//最后可以看看64位能不能跑，输入输出都是一个32的pair不知道行不行
 
 // ---------------------------------------------------------------------------
 // Ingress parser
@@ -28,14 +17,15 @@ const PortId_t OutputPort = 140;
 
 
 struct metadata_t{
-    bit<32> flow_index;           //中间量，用于指示add_unit_Bf和limit_normalized
-    bit<32> weight;                 //用于指示r和Q/R的移位个数
-    bit<32> limit_normalized;       //Q*wf/R  (整数表示)    使用匹配即可
-    bit<32> round;                    //r
-    bit<32> round_mult_wf;           //r*wf     需要匹配wf的各个类型从而shift常数位        
+    bit<32> flow_index;          
+    bit<32> weight;               
+    bit<32> limit_normalized;    
+    bit<32> flow_round_index; 
+    bit<32> round;                 
+    bit<32> round_mult_wf;          
     bit<32> compare_unit_temp;      
-    bit<32> compare_unit;           //r*wf+Q*wf/R
-    bit<32> round_add;          //round add： 1500*Q/(D*R)   匹配D的大小，
+    bit<32> compare_unit;          
+    bit<32> round_add;         
     bit<32> accept_flag;
     bit<3> drop_or_not;
     bit<32> round_number_eg;
@@ -123,7 +113,6 @@ control SwitchIngressDeparser(
 
 control SwitchIngress(
         inout header_t hdr,
-        //inout metadata_t ig_md,
         inout metadata_t meta,
         in ingress_intrinsic_metadata_t ig_intr_md,
         in ingress_intrinsic_metadata_from_parser_t ig_prsr_md,
@@ -155,6 +144,38 @@ control SwitchIngress(
         const default_action = drop();   
         size = 512;
     }
+
+      //table for round index:
+    action get_workerround_index_action(bit<32> round_index){
+        hdr.worker_t.round_index = round_index;
+    }
+    table get_workerround_index_table{
+        key = {
+            hdr.worker_t.egress_port: exact;
+            hdr.worker_t.qid: exact;
+        }
+        actions = {
+            get_workerround_index_action;
+        }
+        size = 128;
+    }
+    //table for get round index (not worker):
+    action get_round_index_action(bit<32> flow_round_index){
+        meta.flow_round_index = flow_round_index; 
+    }
+    table get_flow_round_index_table{
+        key = {
+            ig_tm_md.ucast_egress_port:exact;
+            ig_tm_md.qid:exact;
+        }
+        actions = {
+            get_round_index_action;
+        }
+        size = 128;
+    }
+
+
+
     action get_weightindex_TCP(bit<32> flow_idx){
         meta.flow_index = flow_idx;      //flow_index
     }
@@ -222,22 +243,6 @@ control SwitchIngress(
     };
 
 
-
-    
-
-    //注释掉，因为简单起见先不考虑多个不同port的情况
-    // action Set_Round_Ingress
-
-    //action Get_Round_Ingress
-
-    // //ingress round Set Table
-    // table Set_Ingress_Round{
-    //     key = {
-    //         hdr.worker_t.qid: exact;
-    //         hdr.worker_t.ucast_egress_port: exact;
-    //     }
-    //     actions = 
-    // }z
 
 
     //Get limit(Q*wf/R)
@@ -328,14 +333,11 @@ control SwitchIngress(
 
         if(hdr.worker_t.isValid()){
             //set r
-            Set_Ingress_Round_REG_Action.execute(0);
+            get_workerround_index_table.apply();
+            Set_Ingress_Round_REG_Action.execute(hdr.worker_t.round_index);
             ig_tm_md.ucast_egress_port = LoopBackPort;
             ig_dprsr_md.drop_ctl = 0;
         }
-        //schedule decision,get round
-        // not ack
-        // else if(ig_dprsr_md.drop_ctl == 0 && !( hdr.tcp.isValid()&&hdr.tcp.flags[3:3]==0 ))         //for now ，我们不处理ack数据包，后续可以加上，条件就变成 ig_dprsr_md.drop_ctl == 0 
-                                                                    //此条件不成立，3:3为0的也有data包，所以不行，只能分port来做了，无法绕开ack，这样做会造成大量tcp数据逃逸
         else if(ig_dprsr_md.drop_ctl == 0 && ig_tm_md.ucast_egress_port == OutputPort)
         {
                 // get flow_index
@@ -349,8 +351,10 @@ control SwitchIngress(
                 get_weight_table.apply();
                 //get Q*wf
                 get_limit_table.apply();
+                //get round index
+                get_flow_round_index_table.apply();
                 //get round
-                meta.round = Get_Ingress_Round_REG_Action.execute(0);
+                meta.round = Get_Ingress_Round_REG_Action.execute(meta.flow_round_index);
                 
                 //get r*wf
                 tbl_get_rwf.apply();
@@ -358,15 +362,6 @@ control SwitchIngress(
                 meta.compare_unit = meta.round_mult_wf +meta.limit_normalized;
                 //make decision
                 ig_dprsr_md.drop_ctl = UpdateBf_Action.execute(meta.flow_index);
-
-                //Debug:
-                
-                // hdr.wfq_t.compare_unit = meta.compare_unit;
-                // hdr.wfq_t.round = meta.round;
-                // hdr.wfq_t.weight_indx = meta.flow_index;
-                // hdr.wfq_t.weight = meta.weight;
-                // hdr.wfq_t.round_multed = meta.round_mult_wf;
-                // hdr.wfq_t.limit = meta.limit_normalized;
                 
         }
     }
@@ -426,8 +421,6 @@ parser SwitchEgressParser(
 
 }
 
-//需要把round number从Ingress带到Egress
-
 control SwitchEgress(
     inout header_t hdr,
     inout metadata_t meta_eg,
@@ -471,46 +464,19 @@ control SwitchEgress(
 
     apply{
         
-        //not ack
-        // if (!( hdr.tcp.isValid()&&hdr.tcp.flags[4:4]==1 ) && !hdr.worker_t.isValid() ){
-        // if (!( hdr.tcp.isValid()&&hdr.tcp.flags[3:3]==0 ) && !hdr.worker_t.isValid() ){
         if( !hdr.worker_t.isValid() && eg_intr_md.egress_port == OutputPort)
         {
             //update round
             get_round_add_tbl.apply();
             Set_Egress_Round_REG_Action.execute(0);
-            // hdr.wfq_t.enqueue_depth[18:0] = eg_intr_md.enq_qdepth;
-            // hdr.wfq_t.dequeue_depth[18:0] = eg_intr_md.deq_qdepth;
-            // hdr.wfq_t.round_add = meta_eg.round_add;
-            // hdr.wfq_t.egress_round =  Set_Egress_Round_REG_Action.execute(0);
+
         }    
         else if(hdr.worker_t.isValid()){
             //get round
-            //  meta_eg.round_number_eg = Get_Egress_Round_REG_Action.execute(0);
-            //  hdr.worker_t.round_number =meta_eg.round_number_eg ;
-            // hdr.worker_t.qid = Get_Egress_Round_REG_Action.execute(0);
-            hdr.worker_t.round_number  = Get_Egress_Round_REG_Action.execute(0);
+            hdr.worker_t.round_number  = Get_Egress_Round_REG_Action.execute(hdr.worker_t.round_index);
         }
 
 
-
-        // if(hdr.worker_t.isValid()){
-        //     //get round
-        //     //  meta_eg.round_number_eg = Get_Egress_Round_REG_Action.execute(0);
-        //     //  hdr.worker_t.round_number =meta_eg.round_number_eg ;
-        //     hdr.worker_t.qid = 0x8899;
-        //     // hdr.worker_t.qid = Get_Egress_Round_REG_Action.execute(0);
-        //     hdr.worker_t.round_number  = Get_Egress_Round_REG_Action.execute(0);
-        // }
-        // //not ack
-        // else if (!( hdr.tcp.isValid()&&hdr.tcp.flags[4:4]==1 ) && !hdr.worker_t.isValid() ){
-        //     //update round
-        //     get_round_add_tbl.apply();
-        //     // Set_Egress_Round_REG_Action.execute(0);
-        //     hdr.wfq_t.eqid[4:0] = eg_intr_md.egress_qid;
-        //     // hdr.wfq_t.round_add = meta_eg.round_add;
-        //     hdr.wfq_t.round_add = Set_Egress_Round_REG_Action.execute(0);
-        // }    
     }
 }
 
