@@ -2,7 +2,7 @@
 
 ## 1. Introduction:
 
-This is the repo of the code of "TCP-friendly Packet Scheduling for Approximate Weighted Fair Queueing with a Single Queue".
+This is the repo of "TCP-friendly Packet Scheduling for Approximate Weighted Fair Queueing with a Single Queue".
 
 ## 2. Content of this repo:
 
