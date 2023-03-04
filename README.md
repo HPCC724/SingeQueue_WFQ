@@ -25,4 +25,4 @@ This is the repo of the code of "TCP-friendly Packet Scheduling for Approximate 
 
   - iperf3
 - Simulation:
-  -  Simulation_code/:  Packet level simulation code for SQ and SQ-T, which is built on top of [NetBench](https://github.com/ndal-eth/netbench).
+  - check it on [here](https://github.com/ndal-eth/netbench).
