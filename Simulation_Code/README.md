@@ -1,0 +1,5 @@
+# SQWFQ simulation
+
++ **single-switch-simulation** folder contains the java code of **experiments with Single-Switch Topology** in our paper.To run it, you can just run the `MainFromIntelliJ_SQEX2.java` file, located in `single-switch-simulation/src/main/java/ch.ethz.systems.netbench/core/run`.This file is responsible for executing all the simulations as configured in `single-switch-simulation/projects/WFQ/run/Flow_SQEX2`, and  generating the output results for those simulations in `single-switch-simulation/temp/WFQ/Flow_SQEX2`.
+
++ **leaf-spine-simulation** folder contains the java code of **experiments with Large-Scale Network** in our paper.To run it, you can just run the `MainFromIntelliJ_Flow_Leaf.java` file, located in `leaf-spine-simulation/src/main/java/ch.ethz.systems.netbench/core/run`.This file is responsible for executing all the simulations as configured in `leaf-spine-simulation/projects/WFQ/run/Flow_leaf/albert`, and  generating the output results for those simulations in `leaf-spine-simulation/temp/WFQ/Flow_leaf/albert/`.
