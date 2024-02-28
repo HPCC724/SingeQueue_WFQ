@@ -4,9 +4,10 @@
 #include "common/headers.p4"
 #include "common/util.p4"
 
-
+// const bit<9> LoopBackPort = 0x0;
 const PortId_t LoopBackPort = 164;
 const PortId_t OutputPort = 132;
+
 
 
 // ---------------------------------------------------------------------------
@@ -15,22 +16,27 @@ const PortId_t OutputPort = 132;
 
 
 
+
 struct metadata_t{
-    bit<32> flow_index;          
-    bit<32> weight;               
-    bit<32> limit_normalized;   
-    bit<32> flow_round_index;    
-    bit<32> round;                  
-    bit<32> round_mult_wf;                 
-    bit<32> compare_unit_temp;      
-    bit<32> compare_unit;           
-    bit<32> round_add;         
-    bit<32> accept_flag;
-    bit<3> drop_or_not;
-    bit<32> round_number_eg;
-    bit<32> timestamp_diff;
-    bit<16> timediff_high;
+    bit<32> flow_index;           
+    bit<32> weight;                
+    bit<32> limit_normalized;      
+    bit<32> round;                   
+    bit<32> round_mult_wf;                  
+    bit<32> compare_unit;          
+    bit<32> round_add;          
+    bit<32> pkt_round_idx;
+    // bit<16> timediff_high;
     bit<16> timediff_low;
+    bit<16> newavetime;
+    bit<16> timeindex;
+    bit<16> time0;
+    bit<16> time1;
+    bit<16> time2;
+    bit<16> time3;
+    bit<16> time1_1;
+    bit<16> time2_2;
+    bit<16> time_history;
 }
 
 
@@ -115,6 +121,7 @@ control SwitchIngressDeparser(
 
 control SwitchIngress(
         inout header_t hdr,
+        //inout metadata_t ig_md,
         inout metadata_t meta,
         in ingress_intrinsic_metadata_t ig_intr_md,
         in ingress_intrinsic_metadata_from_parser_t ig_prsr_md,
@@ -144,37 +151,10 @@ control SwitchIngress(
         size = 512;
     }
 
-      //table for round index:
-    action get_workerround_index_action(bit<32> round_index){
-        hdr.worker_t.round_index = round_index;
-    }
-    table get_workerround_index_table{
-        key = {
-            hdr.worker_t.egress_port: exact;
-            hdr.worker_t.qid: exact;
-        }
-        actions = {
-            get_workerround_index_action;
-        }
-        size = 128;
-    }
-    //table for get round index (not worker):
-    action get_round_index_action(bit<32> flow_round_index){
-        meta.flow_round_index = flow_round_index; 
-    }
-    table get_flow_round_index_table{
-        key = {
-            ig_tm_md.ucast_egress_port:exact;
-            ig_tm_md.qid:exact;
-        }
-        actions = {
-            get_round_index_action;
-        }
-        size = 128;
-    }
+
 
     action get_weightindex_TCP(bit<32> flow_idx){
-        meta.flow_index = flow_idx;     
+        meta.flow_index = flow_idx;      //flow_index
     }
     //table getweightTCP
     table get_weightindex_TCP_table{
@@ -188,10 +168,9 @@ control SwitchIngress(
         size = 512;
     }
 
-
     //table getweightUDP
     action get_weightindex_UDP(bit<32> flow_idx){
-        meta.flow_index = flow_idx;      
+        meta.flow_index = flow_idx;      //flow_index
     }
     table get_weightindex_UDP_table{
         key = {
@@ -205,15 +184,16 @@ control SwitchIngress(
     }
     
 
+
     //ingress round register
-    Register<bit<32>,bit<5>> (1,0) Ingress_Round_Reg;
-    RegisterAction<bit<32>,bit<5>,bit<32>> (Ingress_Round_Reg) Set_Ingress_Round_REG_Action = {
+    Register<bit<32>,bit<32>> (1,0) Ingress_Round_Reg;
+    RegisterAction<bit<32>,bit<32>,bit<32>> (Ingress_Round_Reg) Set_Ingress_Round_REG_Action = {
         void apply(inout bit<32> value){
             value = hdr.worker_t.round_number;
         }
     };
 
-    RegisterAction<bit<32>,bit<5>,bit<32>> (Ingress_Round_Reg) Get_Ingress_Round_REG_Action = {
+    RegisterAction<bit<32>,bit<32>,bit<32>> (Ingress_Round_Reg) Get_Ingress_Round_REG_Action = {
         void apply(inout bit<32> value,out bit<32> result){
             result = value;
         }
@@ -221,7 +201,7 @@ control SwitchIngress(
 
 
     //Bf register
-    Register<bit<32>,bit<32>> (32w500,0) Packet_Sent_Reg;
+    Register<bit<32>,bit<32>> (500,0) Packet_Sent_Reg;
     RegisterAction<bit<32>,bit<32>,bit<3>> (Packet_Sent_Reg) UpdateBf_Action = {
         void apply(inout bit<32> value,out bit<3> result){
             if(value + add_unit_Bf <= meta.compare_unit){
@@ -241,25 +221,27 @@ control SwitchIngress(
 
 
 
-    //Get limit(Q*wf/R)
-    action get_limit_action(bit<32> limit){
-        meta.limit_normalized = limit;     
+    action GetRoundIndex(bit<32> roundidx)
+    {
+        meta.pkt_round_idx = roundidx;
     }
-    table get_limit_table{
+    table tbl_Get_Ingress_Round{
         key = {
-            meta.weight:exact;
+            ig_tm_md.ucast_egress_port:exact;
+            ig_tm_md.qid:exact;
         }
         actions = {
-            get_limit_action;
+            GetRoundIndex;
         }
-        const default_action = get_limit_action(0);   
+        const default_action = GetRoundIndex(0);
         size = 512;
     }
     
 
     //Get weight ,1/wf
-    action get_weight_action(bit<32> weight){
+    action get_weight_action(bit<32> weight,bit<32> limit){
         meta.weight = weight;      
+        meta.limit_normalized = limit;  
     }
     table get_weight_table{
         key = {
@@ -320,17 +302,6 @@ control SwitchIngress(
         size = 512;
     }
 
-    //SQS Tables
-    //timestamp:
-    Register<bit<32>,bit<32>> (65536) TimestampReg;
-    RegisterAction<bit<32>,bit<32>,bit<32>> (TimestampReg) UpdateTime = {
-        void apply(inout bit<32> value,out bit<32> result){
-            result = ig_prsr_md.global_tstamp[31:0] - value;
-            value = ig_prsr_md.global_tstamp[31:0];
-        }
-    };
-
-
     //newf table
     action get_limit_new(bit<32> new_limit){
         meta.limit_normalized = new_limit;
@@ -339,8 +310,8 @@ control SwitchIngress(
 
     table tbl_get_new_wf{
         key = {
-            // meta.timediff_high:exact;           //only zero
-            meta.timediff_low:range;
+            meta.newavetime:range;
+            // meta.newavesize:range;
             meta.weight:exact;
         }
         actions = {
@@ -350,57 +321,186 @@ control SwitchIngress(
         const default_action = no_change();   
     }
 
-    apply{
-        //forward
-        table_forward.apply();
+    //timestamp:
+    Register<bit<16>,bit<32>> (512) TimestampReg;
+    RegisterAction<bit<16>,bit<32>,bit<16>> (TimestampReg) UpdateTime = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = ig_prsr_md.global_tstamp[15:0] - value;
+            value = ig_prsr_md.global_tstamp[15:0];
+        }
+    };
 
+    //time ring buffer
+    
+    Register<bit<16>,bit<16>> (512) Time0;
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time0) GetTime0 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+        }
+    }; 
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time0) UpdateTime0 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+            value =  meta.timediff_low;
+        }
+    };
+
+
+    Register<bit<16>,bit<16>> (512) Time1;
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time1) GetTime1 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+        }
+    }; 
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time1) UpdateTime1 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+            value =  meta.timediff_low;
+        }
+    };
+
+    Register<bit<16>,bit<16>> (512) Time2;
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time2) GetTime2 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+        }
+    }; 
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time2) UpdateTime2 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+            value =  meta.timediff_low;
+        }
+    };
+
+    Register<bit<16>,bit<16>> (512) Time3;
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time3) GetTime3 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+        }
+    }; 
+    RegisterAction<bit<16>,bit<16>,bit<16>> (Time3) UpdateTime3 = {
+        void apply(inout bit<16> value,out bit<16> result){
+            result = value;
+            value =  meta.timediff_low;
+        }
+    };
+
+
+    Register<bit<16>,bit<32>> (512) TimeIdx;
+    RegisterAction<bit<16>,bit<32>,bit<16>> (TimeIdx) UpdateTimeIdx = {
+        void apply(inout bit<16> value,out bit<16> result){
+            if(value < 3)
+            {
+                value = value+1;
+            }
+            else{
+                value = 0;
+            }
+            result = value;
+        }
+    }; 
+
+    
+
+    action addtime()
+    {
+        meta.time_history = meta.time1_1 + meta.time2_2;
+    }
+
+    table tbl_addtime_history{
+        key = {}
+        actions = {addtime;}
+        const default_action = addtime();
+    }
+
+
+    apply{
+        table_forward.apply();
         if(hdr.worker_t.isValid()){
             //set r
-            get_workerround_index_table.apply();
-            Set_Ingress_Round_REG_Action.execute(hdr.worker_t.round_index);
-            ig_tm_md.ucast_egress_port = LoopBackPort;
+            Set_Ingress_Round_REG_Action.execute(0);
+            ig_tm_md.ucast_egress_port = LoopBackPort;    
             ig_dprsr_md.drop_ctl = 0;
         }
         else if(ig_dprsr_md.drop_ctl == 0 && ig_tm_md.ucast_egress_port == OutputPort)
         {
-                // get flow_index
-                if(hdr.udp.isValid()){
-                    get_weightindex_UDP_table.apply();
-                }
-                else{             
-                    get_weightindex_TCP_table.apply();
-                }
-                //get wf
-                get_weight_table.apply();
-                //get Q*wf
-                get_limit_table.apply();
-                //get new limit
-                    meta.timestamp_diff = UpdateTime.execute(meta.flow_index);
-                    // meta.timediff_high = meta.timestamp_diff[31:16];
-                    if(meta.timestamp_diff > 65535){
-                        meta.timediff_high = 1;
-                    }
-                    else{
-                        meta.timediff_high = 0;
-                    }
-                    meta.timediff_low = meta.timestamp_diff[15:0];
-                    tbl_get_new_wf.apply();
 
-                //get round index
-                get_flow_round_index_table.apply();
-                //get round
-                meta.round = Get_Ingress_Round_REG_Action.execute(meta.flow_round_index);
+
+            if(hdr.udp.isValid()){
+                get_weightindex_UDP_table.apply();
+            }
+            else{             
+                get_weightindex_TCP_table.apply();
+            }
+            get_weight_table.apply();  
+           
+            // get time
+            meta.timediff_low = UpdateTime.execute(meta.flow_index);
+            meta.timeindex = UpdateTimeIdx.execute(meta.flow_index);
+            // tbl_gettime.apply();
+            // tbl_shifttime.apply();
+            if(meta.timeindex == 0)
+            {
+                meta.time0 = UpdateTime0.execute(meta.timeindex) ;
+                meta.time1 = GetTime1.execute(meta.timeindex) ;
+                meta.time2 = GetTime2.execute(meta.timeindex) ;
+                meta.time3 = GetTime3.execute(meta.timeindex);
+                meta.time0 = meta.time0>>3;
+                meta.time1 = meta.time1>>3;
+                meta.time2 = meta.time2>>2;
+                meta.time3 = meta.time3>>1;
+            }
+            else if (meta.timeindex == 1)
+            {
+                meta.time0 = GetTime0.execute(meta.timeindex) ;
+                meta.time1 = UpdateTime1.execute(meta.timeindex) ;
+                meta.time2 = GetTime2.execute(meta.timeindex) ;
+                meta.time3 = GetTime3.execute(meta.timeindex);
+                meta.time0 = meta.time0>>1;
+                meta.time1 = meta.time1>>3;
+                meta.time2 = meta.time2>>3;
+                meta.time3 = meta.time3>>2;
+            }
+            else if (meta.timeindex ==2)
+            {
+                meta.time0 = GetTime0.execute(meta.timeindex) ;
+                meta.time1 = GetTime1.execute(meta.timeindex) ;
+                meta.time2 = UpdateTime2.execute(meta.timeindex) ;
+                meta.time3 = GetTime3.execute(meta.timeindex);
+                meta.time0 = meta.time0>>2;
+                meta.time1 = meta.time1>>1;
+                meta.time2 = meta.time2>>3;
+                meta.time3 = meta.time3>>3;
+            }
+            else
+            {
+                meta.time0 = GetTime0.execute(meta.timeindex) ;
+                meta.time1 = GetTime1.execute(meta.timeindex) ;
+                meta.time2 = GetTime2.execute(meta.timeindex) ;
+                meta.time3 = UpdateTime3.execute(meta.timeindex);
+                meta.time0 = meta.time0>>3;
+                meta.time1 = meta.time1>>2;
+                meta.time2 = meta.time2>>1;
+                meta.time3 = meta.time3>>3;
+            }
+            meta.time1_1 = meta.time0 + meta.time1;
+            meta.time2_2 = meta.time2 + meta.time3;
+            meta.timediff_low = meta.timediff_low>>1;
+            tbl_addtime_history.apply();
+            meta.newavetime = meta.timediff_low + meta.time_history;
+            tbl_get_new_wf.apply();
+            //get round
+            tbl_Get_Ingress_Round.apply();
+            meta.round = Get_Ingress_Round_REG_Action.execute(0);
                 
-                //get r*wf
-                tbl_get_rwf.apply();
-                //get comparison
-                meta.compare_unit = meta.round_mult_wf +meta.limit_normalized;
-                //make decision
-                ig_dprsr_md.drop_ctl = UpdateBf_Action.execute(meta.flow_index);
-
-
-                
+            //get r*wf
+            tbl_get_rwf.apply();
+            //get comparison
+            meta.compare_unit = meta.round_mult_wf +meta.limit_normalized;
+            //make decision
+            ig_dprsr_md.drop_ctl = UpdateBf_Action.execute(meta.flow_index);
         }
+
     }
 }
 
@@ -457,6 +557,7 @@ parser SwitchEgressParser(
 }
 
 
+
 control SwitchEgress(
     inout header_t hdr,
     inout metadata_t meta_eg,
@@ -483,18 +584,35 @@ control SwitchEgress(
     
 
      //Engress round register
-    Register<bit<32>,bit<5>> (32,0) Egress_Round_Reg;
-    RegisterAction<bit<32>,bit<5>,bit<32>> (Egress_Round_Reg) Set_Egress_Round_REG_Action = {
+    Register<bit<32>,bit<32>> (16,0) Egress_Round_Reg;
+    RegisterAction<bit<32>,bit<32>,bit<32>> (Egress_Round_Reg) Set_Egress_Round_REG_Action = {
         void apply(inout bit<32> value){
              value = value + meta_eg.round_add;
         }
     };
 
-    RegisterAction<bit<32>,bit<5>,bit<32>> (Egress_Round_Reg) Get_Egress_Round_REG_Action = {
+    RegisterAction<bit<32>,bit<32>,bit<32>> (Egress_Round_Reg) Get_Egress_Round_REG_Action = {
         void apply(inout bit<32> value,out bit<32> result){
             result = value;
         }
     };
+
+ //action Get_Round_Idx
+    action GetRoundIndex(bit<32> roundidx)
+    {
+        meta_eg.pkt_round_idx = roundidx;
+    }
+    table tbl_Get_Ingress_Round{
+        key = {
+            eg_intr_md.egress_port:exact;
+            eg_intr_md.egress_qid:exact;
+        }
+        actions = {
+            GetRoundIndex;
+        }
+        const default_action = GetRoundIndex(0);
+        size = 512;
+    }
 
 
     apply{
@@ -502,12 +620,19 @@ control SwitchEgress(
         {
             //update round
             get_round_add_tbl.apply();
-            Set_Egress_Round_REG_Action.execute(0);
-
+            tbl_Get_Ingress_Round.apply();
+            Set_Egress_Round_REG_Action.execute(meta_eg.pkt_round_idx);
+            // hdr.wfq_t.enqueue_depth[18:0] = eg_intr_md.enq_qdepth;
+            // hdr.wfq_t.dequeue_depth[18:0] = eg_intr_md.deq_qdepth;
+            // hdr.wfq_t.round_add = meta_eg.round_add;
+            // hdr.wfq_t.egress_round =  Set_Egress_Round_REG_Action.execute(0);
         }    
         else if(hdr.worker_t.isValid()){
             //get round
-            hdr.worker_t.round_number  = Get_Egress_Round_REG_Action.execute(hdr.worker_t.round_index);
+            //  meta_eg.round_number_eg = Get_Egress_Round_REG_Action.execute(0);
+            //  hdr.worker_t.round_number =meta_eg.round_number_eg ;
+            // hdr.worker_t.qid = Get_Egress_Round_REG_Action.execute(0);
+            hdr.worker_t.round_number  = Get_Egress_Round_REG_Action.execute(0);
         }    
     }
 }
